@@ -24,7 +24,11 @@ typedef enum {
     JSON_ERROR_INDEX_OUT_OF_BOUNDS,
     JSON_ERROR_NULL_POINTER,
     JSON_ERROR_SQLITE_ERROR,
-    JSON_ERROR_CONVERSION_FAILED
+    JSON_ERROR_CONVERSION_FAILED,
+    JSON_ERROR_INVALID_WHITESPACE,
+    JSON_ERROR_INVALID_SURROGATE,
+    JSON_ERROR_NUMBER_OUT_OF_RANGE,
+    JSON_ERROR_LEADING_ZERO
 } JsonErrorCode;
 
 typedef struct {
@@ -43,6 +47,34 @@ typedef enum {
     JSON_ARRAY,
     JSON_OBJECT
 } JsonType;
+
+typedef enum {
+    TOKEN_EOF,
+    TOKEN_NULL,
+    TOKEN_TRUE,
+    TOKEN_FALSE,
+    TOKEN_NUMBER,
+    TOKEN_STRING,
+    TOKEN_LBRACE,
+    TOKEN_RBRACE,
+    TOKEN_LBRACKET,
+    TOKEN_RBRACKET,
+    TOKEN_COLON,
+    TOKEN_COMMA,
+    TOKEN_ERROR
+} TokenType;
+
+typedef struct {
+    TokenType type;
+    const char* start;
+    size_t length;
+    size_t line;
+    size_t column;
+    union {
+        double number;
+        char* string;
+    } value;
+} Token;
 
 typedef struct {
     void* db;
@@ -83,22 +115,44 @@ struct JsonArray {
     size_t capacity;
 };
 
-// Global error state
+typedef struct JsonStreamParser JsonStreamParser;
+
+typedef enum {
+    JSON_EVENT_OBJECT_START,
+    JSON_EVENT_OBJECT_END,
+    JSON_EVENT_ARRAY_START,
+    JSON_EVENT_ARRAY_END,
+    JSON_EVENT_KEY,
+    JSON_EVENT_VALUE,
+    JSON_EVENT_ERROR,
+    JSON_EVENT_EOF
+} JsonStreamEventType;
+
+typedef struct {
+    JsonStreamEventType type;
+    JsonValue* value;
+    char* key;
+} JsonStreamEvent;
+
+typedef bool (*JsonStreamCallback)(JsonStreamEvent* event, void* user_data);
+
 extern JsonError g_json_last_error;
 
-// Error handling functions
 const char* json_error_message(JsonErrorCode code);
 JsonError* json_get_last_error(void);
 void json_clear_error(void);
 void json_set_error(JsonErrorCode code, const char* message, size_t line, size_t column);
 
-// Core parsing with error handling
 JsonValue* json_parse(const char* json_string);
 JsonValue* json_parse_with_error(const char* json_string, JsonError* error);
 char* json_stringify(const JsonValue* value, bool pretty);
 void json_free(JsonValue* value);
 
-// Safe constructors with validation
+JsonStreamParser* json_stream_parser_create(JsonStreamCallback callback, void* user_data);
+bool json_stream_parse_chunk(JsonStreamParser* parser, const char* chunk, size_t length);
+bool json_stream_parse_file(JsonStreamParser* parser, const char* filename);
+void json_stream_parser_free(JsonStreamParser* parser);
+
 JsonValue* json_create_null(void);
 JsonValue* json_create_bool(bool value);
 JsonValue* json_create_number(double value);
@@ -106,13 +160,11 @@ JsonValue* json_create_string(const char* value);
 JsonValue* json_create_array(void);
 JsonValue* json_create_object(void);
 
-// Safe array operations
 bool json_array_append(JsonValue* array, JsonValue* value);
 JsonValue* json_array_get(const JsonValue* array, size_t index);
 bool json_array_remove(JsonValue* array, size_t index);
 size_t json_array_size(const JsonValue* array);
 
-// Safe object operations
 bool json_object_set(JsonValue* object, const char* key, JsonValue* value);
 JsonValue* json_object_get(const JsonValue* object, const char* key);
 bool json_object_has(const JsonValue* object, const char* key);
@@ -120,7 +172,6 @@ bool json_object_remove(JsonValue* object, const char* key);
 size_t json_object_size(const JsonValue* object);
 const char** json_object_keys(const JsonValue* object, size_t* count);
 
-// Type checking
 bool json_is_null(const JsonValue* value);
 bool json_is_bool(const JsonValue* value);
 bool json_is_number(const JsonValue* value);
@@ -128,7 +179,6 @@ bool json_is_string(const JsonValue* value);
 bool json_is_array(const JsonValue* value);
 bool json_is_object(const JsonValue* value);
 
-// Format conversion with error handling
 char* json_to_xml(const JsonValue* value);
 char* json_to_yaml(const JsonValue* value);
 char* json_to_csv(const JsonValue* value);
@@ -139,17 +189,14 @@ JsonValue* json_merge(const JsonValue* obj1, const JsonValue* obj2);
 JsonValue* json_deep_copy(const JsonValue* value);
 bool json_equals(const JsonValue* val1, const JsonValue* val2);
 
-// Enhanced file I/O with error handling
 JsonValue* json_parse_file(const char* filename);
 bool json_save_file(const char* filename, const JsonValue* value, bool pretty);
 
-// Advanced parsers with validation
 JsonValue* xml_to_json(const char* xml);
 JsonValue* yaml_to_json(const char* yaml);
 JsonValue* csv_to_json(const char* csv);
 JsonValue* ini_to_json(const char* ini);
 
-// Enhanced SQLite integration
 JsonSqliteDB* json_to_sqlite(const JsonValue* value, const char* db_path);
 JsonValue* sqlite_to_json(const char* db_path, const char* table_name);
 bool sqlite_insert(JsonSqliteDB* db, const char* table, const JsonValue* value);
@@ -160,18 +207,13 @@ bool sqlite_delete(JsonSqliteDB* db, const char* table, const char* key, const c
 void sqlite_optimize(JsonSqliteDB* db);
 void sqlite_close(JsonSqliteDB* db);
 
-// JSON Path queries with error handling
 JsonValue* json_path_query(const JsonValue* root, const char* path);
-
-// JSON Schema validation
 bool json_validate_schema(const JsonValue* data, const JsonValue* schema);
-
-// JSON Diff & Patch
 JsonValue* json_diff(const JsonValue* val1, const JsonValue* val2);
 JsonValue* json_patch(JsonValue* target, const JsonValue* patch);
-
-// Performance & Memory
 size_t json_memory_usage(const JsonValue* value);
 void json_optimize_memory(JsonValue* value);
+
+void run_all_benchmarks(void);
 
 #endif
