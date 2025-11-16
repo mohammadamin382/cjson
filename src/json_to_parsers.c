@@ -3,17 +3,22 @@
 #include <string.h>
 #include <ctype.h>
 
-// XML to JSON Parser
 static void skip_xml_whitespace(const char** ptr) {
     while (**ptr && isspace(**ptr)) (*ptr)++;
 }
 
 static char* parse_xml_tag_name(const char** ptr) {
     const char* start = *ptr;
-    while (**ptr && **ptr != '>' && **ptr != ' ' && **ptr != '/') (*ptr)++;
+    while (**ptr && **ptr != '>' && **ptr != ' ' && **ptr != '/' && **ptr != '\t' && **ptr != '\n') {
+        (*ptr)++;
+    }
     
     size_t len = *ptr - start;
+    if (len == 0) return NULL;
+    
     char* name = malloc(len + 1);
+    if (!name) return NULL;
+    
     strncpy(name, start, len);
     name[len] = '\0';
     return name;
@@ -21,22 +26,41 @@ static char* parse_xml_tag_name(const char** ptr) {
 
 static char* parse_xml_content(const char** ptr) {
     const char* start = *ptr;
-    while (**ptr && **ptr != '<') (*ptr)++;
+    size_t len = 0;
     
-    size_t len = *ptr - start;
+    while (**ptr && **ptr != '<') {
+        len++;
+        (*ptr)++;
+    }
+    
+    if (len == 0) return NULL;
+    
     char* content = malloc(len + 1);
+    if (!content) return NULL;
+    
     strncpy(content, start, len);
     content[len] = '\0';
     
-    // Trim whitespace
-    char* end = content + len - 1;
-    while (end > content && isspace(*end)) end--;
-    *(end + 1) = '\0';
+    char* trimmed_start = content;
+    while (*trimmed_start && isspace(*trimmed_start)) trimmed_start++;
+    
+    if (*trimmed_start == '\0') {
+        free(content);
+        return NULL;
+    }
+    
+    char* trimmed_end = content + len - 1;
+    while (trimmed_end > trimmed_start && isspace(*trimmed_end)) {
+        *trimmed_end = '\0';
+        trimmed_end--;
+    }
+    
+    if (trimmed_start != content) {
+        memmove(content, trimmed_start, strlen(trimmed_start) + 1);
+    }
     
     return content;
 }
-
-static JsonValue* parse_xml_element(const char** ptr);
 
 static char* parse_xml_attr_value(const char** ptr) {
     skip_xml_whitespace(ptr);
@@ -49,41 +73,13 @@ static char* parse_xml_attr_value(const char** ptr) {
     
     size_t len = *ptr - start;
     char* value = malloc(len + 1);
+    if (!value) return NULL;
+    
     strncpy(value, start, len);
     value[len] = '\0';
     
     if (**ptr == quote) (*ptr)++;
     return value;
-}
-
-static JsonValue* parse_xml_attributes(const char** ptr) {
-    JsonValue* attrs = json_create_object();
-    
-    while (**ptr && **ptr != '>' && **ptr != '/') {
-        skip_xml_whitespace(ptr);
-        if (**ptr == '>' || **ptr == '/') break;
-        
-        const char* name_start = *ptr;
-        while (**ptr && **ptr != '=' && **ptr != ' ' && **ptr != '>') (*ptr)++;
-        
-        size_t name_len = *ptr - name_start;
-        char* attr_name = malloc(name_len + 1);
-        strncpy(attr_name, name_start, name_len);
-        attr_name[name_len] = '\0';
-        
-        skip_xml_whitespace(ptr);
-        if (**ptr == '=') {
-            (*ptr)++;
-            char* attr_value = parse_xml_attr_value(ptr);
-            if (attr_value) {
-                json_object_set(attrs, attr_name, json_create_string(attr_value));
-                free(attr_value);
-            }
-        }
-        free(attr_name);
-    }
-    
-    return attrs;
 }
 
 static JsonValue* parse_xml_node(const char** ptr) {
@@ -92,7 +88,6 @@ static JsonValue* parse_xml_node(const char** ptr) {
     if (**ptr != '<') return NULL;
     (*ptr)++;
     
-    // Skip XML declaration and comments
     if (**ptr == '?') {
         while (**ptr && !(**ptr == '?' && *(*ptr + 1) == '>')) (*ptr)++;
         if (**ptr == '?') (*ptr) += 2;
@@ -106,16 +101,56 @@ static JsonValue* parse_xml_node(const char** ptr) {
         return parse_xml_node(ptr);
     }
     
+    if (**ptr == '!') {
+        while (**ptr && **ptr != '>') (*ptr)++;
+        if (**ptr == '>') (*ptr)++;
+        return parse_xml_node(ptr);
+    }
+    
     if (**ptr == '/') return NULL;
     
     char* tag_name = parse_xml_tag_name(ptr);
+    if (!tag_name) return NULL;
+    
     JsonValue* obj = json_create_object();
+    if (!obj) {
+        free(tag_name);
+        return NULL;
+    }
+    
     json_object_set(obj, "_tag", json_create_string(tag_name));
     
-    // Parse attributes
     skip_xml_whitespace(ptr);
+    
     if (**ptr != '>' && **ptr != '/') {
-        JsonValue* attrs = parse_xml_attributes(ptr);
+        JsonValue* attrs = json_create_object();
+        
+        while (**ptr && **ptr != '>' && **ptr != '/') {
+            skip_xml_whitespace(ptr);
+            if (**ptr == '>' || **ptr == '/') break;
+            
+            const char* name_start = *ptr;
+            while (**ptr && **ptr != '=' && !isspace(**ptr) && **ptr != '>') (*ptr)++;
+            
+            size_t name_len = *ptr - name_start;
+            if (name_len == 0) break;
+            
+            char* attr_name = malloc(name_len + 1);
+            strncpy(attr_name, name_start, name_len);
+            attr_name[name_len] = '\0';
+            
+            skip_xml_whitespace(ptr);
+            if (**ptr == '=') {
+                (*ptr)++;
+                char* attr_value = parse_xml_attr_value(ptr);
+                if (attr_value) {
+                    json_object_set(attrs, attr_name, json_create_string(attr_value));
+                    free(attr_value);
+                }
+            }
+            free(attr_name);
+        }
+        
         if (attrs->data.object_value->count > 0) {
             json_object_set(obj, "_attributes", attrs);
         } else {
@@ -123,7 +158,6 @@ static JsonValue* parse_xml_node(const char** ptr) {
         }
     }
     
-    // Self-closing tag
     if (**ptr == '/') {
         (*ptr)++;
         if (**ptr == '>') (*ptr)++;
@@ -135,7 +169,6 @@ static JsonValue* parse_xml_node(const char** ptr) {
     
     skip_xml_whitespace(ptr);
     
-    // Check for closing tag immediately
     if (**ptr == '<' && *(*ptr + 1) == '/') {
         (*ptr) += 2;
         while (**ptr && **ptr != '>') (*ptr)++;
@@ -144,7 +177,6 @@ static JsonValue* parse_xml_node(const char** ptr) {
         return obj;
     }
     
-    // Parse text content
     if (**ptr != '<') {
         char* content = parse_xml_content(ptr);
         if (content && strlen(content) > 0) {
@@ -153,7 +185,6 @@ static JsonValue* parse_xml_node(const char** ptr) {
         if (content) free(content);
     }
     
-    // Parse children
     JsonValue* children = NULL;
     while (**ptr == '<' && *(*ptr + 1) != '/') {
         JsonValue* child = parse_xml_node(ptr);
@@ -172,7 +203,6 @@ static JsonValue* parse_xml_node(const char** ptr) {
         json_free(children);
     }
     
-    // Parse closing tag
     if (**ptr == '<' && *(*ptr + 1) == '/') {
         (*ptr) += 2;
         while (**ptr && **ptr != '>') (*ptr)++;
@@ -189,8 +219,14 @@ JsonValue* xml_to_json(const char* xml) {
         return NULL;
     }
     
-    if (strlen(xml) == 0) {
+    size_t xml_len = strlen(xml);
+    if (xml_len == 0) {
         json_set_error(JSON_ERROR_CONVERSION_FAILED, "XML input is empty", 0, 0);
+        return NULL;
+    }
+    
+    if (xml_len > 10 * 1024 * 1024) {  // 10MB limit to prevent DoS
+        json_set_error(JSON_ERROR_OUT_OF_MEMORY, "XML input too large (>10MB)", 0, 0);
         return NULL;
     }
     
@@ -204,7 +240,6 @@ JsonValue* xml_to_json(const char* xml) {
     return result;
 }
 
-// Advanced YAML to JSON Parser with nested support
 static int yaml_get_indent(const char* line) {
     int indent = 0;
     while (*line == ' ') {
@@ -217,41 +252,43 @@ static int yaml_get_indent(const char* line) {
 static JsonValue* yaml_parse_value(const char* val_str) {
     if (!val_str || strlen(val_str) == 0) return json_create_null();
     
-    // Trim whitespace
-    while (*val_str && isspace(*val_str)) val_str++;
-    size_t len = strlen(val_str);
-    while (len > 0 && isspace(val_str[len - 1])) len--;
+    const char* trimmed = val_str;
+    while (*trimmed && isspace(*trimmed)) trimmed++;
     
-    char* trimmed = malloc(len + 1);
-    strncpy(trimmed, val_str, len);
-    trimmed[len] = '\0';
+    size_t len = strlen(trimmed);
+    while (len > 0 && isspace(trimmed[len - 1])) len--;
     
-    JsonValue* value;
+    char* value = malloc(len + 1);
+    if (!value) return json_create_null();
     
-    if (strcmp(trimmed, "true") == 0) {
-        value = json_create_bool(true);
-    } else if (strcmp(trimmed, "false") == 0) {
-        value = json_create_bool(false);
-    } else if (strcmp(trimmed, "null") == 0 || strcmp(trimmed, "~") == 0 || len == 0) {
-        value = json_create_null();
+    strncpy(value, trimmed, len);
+    value[len] = '\0';
+    
+    JsonValue* result;
+    
+    if (strcmp(value, "true") == 0 || strcmp(value, "yes") == 0 || strcmp(value, "on") == 0) {
+        result = json_create_bool(true);
+    } else if (strcmp(value, "false") == 0 || strcmp(value, "no") == 0 || strcmp(value, "off") == 0) {
+        result = json_create_bool(false);
+    } else if (strcmp(value, "null") == 0 || strcmp(value, "~") == 0 || len == 0) {
+        result = json_create_null();
     } else {
         char* endptr;
-        double num = strtod(trimmed, &endptr);
-        if (*endptr == '\0' && *trimmed != '\0') {
-            value = json_create_number(num);
+        double num = strtod(value, &endptr);
+        if (*endptr == '\0' && *value != '\0' && !isalpha(*value)) {
+            result = json_create_number(num);
         } else {
-            // Handle quoted strings
-            if ((trimmed[0] == '"' || trimmed[0] == '\'') && len > 1 && trimmed[len - 1] == trimmed[0]) {
-                trimmed[len - 1] = '\0';
-                value = json_create_string(trimmed + 1);
+            if ((value[0] == '"' || value[0] == '\'') && len > 1 && value[len - 1] == value[0]) {
+                value[len - 1] = '\0';
+                result = json_create_string(value + 1);
             } else {
-                value = json_create_string(trimmed);
+                result = json_create_string(value);
             }
         }
     }
     
-    free(trimmed);
-    return value;
+    free(value);
+    return result;
 }
 
 JsonValue* yaml_to_json(const char* yaml) {
@@ -266,58 +303,47 @@ JsonValue* yaml_to_json(const char* yaml) {
     }
     
     JsonValue* root = json_create_object();
-    if (!root) {
-        return NULL;
-    }
+    if (!root) return NULL;
     
     const char* ptr = yaml;
-    
-    JsonValue* stack[32];
-    int indent_stack[32];
+    JsonValue* stack[64];
+    int indent_stack[64];
     int stack_depth = 0;
     stack[0] = root;
     indent_stack[0] = -1;
     
-    char line_buffer[4096];
+    char line_buffer[8192];
     
     while (*ptr) {
-        // Read line
         const char* line_start = ptr;
         size_t line_len = 0;
-        while (*ptr && *ptr != '\n') {
-            if (line_len < sizeof(line_buffer) - 1) {
-                line_buffer[line_len++] = *ptr;
-            }
-            ptr++;
+        
+        while (*ptr && *ptr != '\n' && line_len < sizeof(line_buffer) - 1) {
+            line_buffer[line_len++] = *ptr++;
         }
         line_buffer[line_len] = '\0';
         if (*ptr == '\n') ptr++;
         
-        // Skip empty lines and comments
         const char* line = line_buffer;
-        while (*line && isspace(*line)) line++;
+        while (*line && isspace(*line) && *line != '\n') line++;
         if (*line == '\0' || *line == '#') continue;
         
         int indent = yaml_get_indent(line_buffer);
         
-        // Adjust stack based on indentation
         while (stack_depth > 0 && indent <= indent_stack[stack_depth]) {
             stack_depth--;
         }
         
         JsonValue* current = stack[stack_depth];
         
-        // Check for list item
         if (line[0] == '-' && (line[1] == ' ' || line[1] == '\0')) {
             line += 2;
             while (*line == ' ') line++;
             
             if (current->type != JSON_ARRAY) {
-                // Need to convert or create array context
                 continue;
             }
             
-            // Check if line has key:value
             const char* colon = strchr(line, ':');
             if (colon) {
                 JsonValue* item_obj = json_create_object();
@@ -343,7 +369,6 @@ JsonValue* yaml_to_json(const char* yaml) {
             continue;
         }
         
-        // Parse key:value
         const char* colon = strchr(line, ':');
         if (!colon) continue;
         
@@ -357,18 +382,18 @@ JsonValue* yaml_to_json(const char* yaml) {
         while (*val_str == ' ') val_str++;
         
         if (*val_str == '\0' || *val_str == '\n') {
-            // Nested object or array coming
             JsonValue* nested = json_create_object();
             
             if (current->type == JSON_OBJECT) {
                 json_object_set(current, key, nested);
             }
             
-            stack_depth++;
-            stack[stack_depth] = nested;
-            indent_stack[stack_depth] = indent;
+            if (stack_depth < 63) {
+                stack_depth++;
+                stack[stack_depth] = nested;
+                indent_stack[stack_depth] = indent;
+            }
         } else if (*val_str == '[') {
-            // Inline array
             JsonValue* arr = json_create_array();
             val_str++;
             
@@ -405,46 +430,76 @@ JsonValue* yaml_to_json(const char* yaml) {
     return root;
 }
 
-// CSV to JSON Parser
 JsonValue* csv_to_json(const char* csv) {
     if (!csv) {
         json_set_error(JSON_ERROR_NULL_POINTER, "CSV input is NULL", 0, 0);
         return NULL;
     }
     
-    if (strlen(csv) == 0) {
+    size_t csv_len = strlen(csv);
+    if (csv_len == 0) {
         json_set_error(JSON_ERROR_CONVERSION_FAILED, "CSV input is empty", 0, 0);
         return NULL;
     }
     
-    JsonValue* array = json_create_array();
-    if (!array) {
+    if (csv_len > 50 * 1024 * 1024) {  // 50MB limit
+        json_set_error(JSON_ERROR_OUT_OF_MEMORY, "CSV input too large (>50MB)", 0, 0);
         return NULL;
     }
     
+    JsonValue* array = json_create_array();
+    if (!array) return NULL;
+    
     const char* ptr = csv;
     
-    // Parse header
     char** headers = NULL;
     size_t header_count = 0;
-    size_t header_capacity = 8;
+    size_t header_capacity = 16;
     headers = malloc(header_capacity * sizeof(char*));
+    if (!headers) {
+        json_free(array);
+        json_set_error(JSON_ERROR_OUT_OF_MEMORY, "Failed to allocate headers array", 0, 0);
+        return NULL;
+    }
+    memset(headers, 0, header_capacity * sizeof(char*));
     
     while (*ptr && *ptr != '\n') {
         while (*ptr && isspace(*ptr) && *ptr != '\n') ptr++;
         if (*ptr == '\n') break;
         
         const char* start = ptr;
-        while (*ptr && *ptr != ',' && *ptr != '\n') ptr++;
+        bool in_quotes = false;
+        
+        if (*ptr == '"') {
+            in_quotes = true;
+            ptr++;
+            start = ptr;
+            while (*ptr && !(*ptr == '"' && *(ptr + 1) != '"')) {
+                if (*ptr == '"' && *(ptr + 1) == '"') ptr += 2;
+                else ptr++;
+            }
+        } else {
+            while (*ptr && *ptr != ',' && *ptr != '\n') ptr++;
+        }
         
         size_t len = ptr - start;
         char* header = malloc(len + 1);
         strncpy(header, start, len);
         header[len] = '\0';
         
+        if (in_quotes && *ptr == '"') ptr++;
+        
         if (header_count >= header_capacity) {
             header_capacity *= 2;
-            headers = realloc(headers, header_capacity * sizeof(char*));
+            char** new_headers = realloc(headers, header_capacity * sizeof(char*));
+            if (!new_headers) {
+                for (size_t i = 0; i < header_count; i++) free(headers[i]);
+                free(headers);
+                free(header);
+                json_free(array);
+                return NULL;
+            }
+            headers = new_headers;
         }
         headers[header_count++] = header;
         
@@ -452,11 +507,11 @@ JsonValue* csv_to_json(const char* csv) {
     }
     if (*ptr == '\n') ptr++;
     
-    // Parse rows
     while (*ptr) {
         JsonValue* row = json_create_object();
+        if (!row) break;
         
-        for (size_t i = 0; i < header_count; i++) {
+        for (size_t i = 0; i < header_count && *ptr; i++) {
             while (*ptr && isspace(*ptr) && *ptr != '\n') ptr++;
             if (*ptr == '\n' || !*ptr) break;
             
@@ -467,7 +522,10 @@ JsonValue* csv_to_json(const char* csv) {
                 in_quotes = true;
                 ptr++;
                 start = ptr;
-                while (*ptr && !(*ptr == '"' && *(ptr + 1) != '"')) ptr++;
+                while (*ptr && !(*ptr == '"' && (*(ptr + 1) == ',' || *(ptr + 1) == '\n' || !*(ptr + 1)))) {
+                    if (*ptr == '"' && *(ptr + 1) == '"') ptr += 2;
+                    else ptr++;
+                }
             } else {
                 while (*ptr && *ptr != ',' && *ptr != '\n') ptr++;
             }
@@ -499,7 +557,6 @@ JsonValue* csv_to_json(const char* csv) {
     return array;
 }
 
-// INI to JSON Parser
 JsonValue* ini_to_json(const char* ini) {
     if (!ini) {
         json_set_error(JSON_ERROR_NULL_POINTER, "INI input is NULL", 0, 0);
@@ -512,9 +569,7 @@ JsonValue* ini_to_json(const char* ini) {
     }
     
     JsonValue* obj = json_create_object();
-    if (!obj) {
-        return NULL;
-    }
+    if (!obj) return NULL;
     
     const char* ptr = ini;
     char* current_section = NULL;
@@ -526,6 +581,12 @@ JsonValue* ini_to_json(const char* ini) {
             continue;
         }
         if (!*ptr) break;
+        
+        if (*ptr == ';' || *ptr == '#') {
+            while (*ptr && *ptr != '\n') ptr++;
+            if (*ptr == '\n') ptr++;
+            continue;
+        }
         
         if (*ptr == '[') {
             ptr++;
@@ -567,12 +628,22 @@ JsonValue* ini_to_json(const char* ini) {
         while (*ptr && isspace(*ptr) && *ptr != '\n') ptr++;
         
         const char* val_start = ptr;
-        while (*ptr && *ptr != '\n') ptr++;
+        bool in_quotes = false;
+        if (*ptr == '"') {
+            in_quotes = true;
+            ptr++;
+            val_start = ptr;
+            while (*ptr && *ptr != '"') ptr++;
+        } else {
+            while (*ptr && *ptr != '\n' && *ptr != ';' && *ptr != '#') ptr++;
+        }
         
         size_t val_len = ptr - val_start;
         char* val_str = malloc(val_len + 1);
         strncpy(val_str, val_start, val_len);
         val_str[val_len] = '\0';
+        
+        if (in_quotes && *ptr == '"') ptr++;
         
         while (val_len > 0 && isspace(val_str[val_len - 1])) val_str[--val_len] = '\0';
         
