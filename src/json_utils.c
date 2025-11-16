@@ -11,10 +11,20 @@ typedef struct CopyContext {
 
 static CopyContext* create_copy_context(void) {
     CopyContext* ctx = malloc(sizeof(CopyContext));
+    if (!ctx) return NULL;
+    
     ctx->capacity = 32;
     ctx->count = 0;
     ctx->seen = malloc(ctx->capacity * sizeof(JsonValue*));
     ctx->copies = malloc(ctx->capacity * sizeof(JsonValue*));
+    
+    if (!ctx->seen || !ctx->copies) {
+        if (ctx->seen) free(ctx->seen);
+        if (ctx->copies) free(ctx->copies);
+        free(ctx);
+        return NULL;
+    }
+    
     return ctx;
 }
 
@@ -35,10 +45,21 @@ static JsonValue* find_copy(CopyContext* ctx, const JsonValue* original) {
 }
 
 static void register_copy(CopyContext* ctx, const JsonValue* original, JsonValue* copy) {
+    if (!ctx || !original || !copy) return;
+    
     if (ctx->count >= ctx->capacity) {
-        ctx->capacity *= 2;
-        ctx->seen = realloc(ctx->seen, ctx->capacity * sizeof(JsonValue*));
-        ctx->copies = realloc(ctx->copies, ctx->capacity * sizeof(JsonValue*));
+        size_t new_capacity = ctx->capacity * 2;
+        const JsonValue** new_seen = realloc(ctx->seen, new_capacity * sizeof(JsonValue*));
+        JsonValue** new_copies = realloc(ctx->copies, new_capacity * sizeof(JsonValue*));
+        
+        if (!new_seen || !new_copies) {
+            // Failed to expand, keep old pointers
+            return;
+        }
+        
+        ctx->seen = new_seen;
+        ctx->copies = new_copies;
+        ctx->capacity = new_capacity;
     }
     ctx->seen[ctx->count] = original;
     ctx->copies[ctx->count] = copy;
