@@ -1,19 +1,68 @@
 #include "json_parser.h"
 #include <stdlib.h>
 #include <string.h>
+#include <strings.h>
 #include <stdio.h>
+#include <ctype.h>
 #include <sqlite3.h>
 
 static char* sanitize_name(const char* name) {
+    if (!name) {
+        json_set_error(JSON_ERROR_NULL_POINTER, "Table/column name is NULL", 0, 0);
+        return NULL;
+    }
+    
     size_t len = strlen(name);
+    if (len == 0) {
+        json_set_error(JSON_ERROR_INVALID_SYNTAX, "Table/column name is empty", 0, 0);
+        return NULL;
+    }
+    
+    if (len > 255) {
+        json_set_error(JSON_ERROR_SQLITE_ERROR, "Table/column name too long (>255 chars)", 0, 0);
+        return NULL;
+    }
+    
+    // Check for SQL keywords to prevent injection
+    const char* sql_keywords[] = {
+        "SELECT", "INSERT", "UPDATE", "DELETE", "DROP", "CREATE", "ALTER", 
+        "UNION", "WHERE", "FROM", "JOIN", "EXEC", "EXECUTE", NULL
+    };
+    
+    for (int i = 0; sql_keywords[i]; i++) {
+        if (strcasecmp(name, sql_keywords[i]) == 0) {
+            json_set_error(JSON_ERROR_INVALID_SYNTAX, "Name cannot be SQL keyword", 0, 0);
+            return NULL;
+        }
+    }
+    
     char* result = malloc(len + 1);
+    if (!result) {
+        json_set_error(JSON_ERROR_OUT_OF_MEMORY, "Failed to allocate sanitized name", 0, 0);
+        return NULL;
+    }
+    
     size_t j = 0;
+    
+    // First character must be letter or underscore
+    if (!isalpha(name[0]) && name[0] != '_') {
+        free(result);
+        json_set_error(JSON_ERROR_INVALID_SYNTAX, "Name must start with letter or underscore", 0, 0);
+        return NULL;
+    }
     
     for (size_t i = 0; i < len; i++) {
         if (isalnum(name[i]) || name[i] == '_') {
             result[j++] = name[i];
         }
     }
+    
+    if (j == 0) {
+        free(result);
+        json_set_error(JSON_ERROR_INVALID_SYNTAX, "Name contains no valid characters", 0, 0);
+        return NULL;
+    }
+    
     result[j] = '\0';
     return result;
 }
