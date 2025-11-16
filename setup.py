@@ -1,5 +1,11 @@
 from setuptools import setup, Extension
 
+import platform
+
+compile_args = ['-std=c11', '-O3', '-Wall', '-Wextra']
+if platform.machine() in ['x86_64', 'AMD64', 'i686', 'i386']:
+    compile_args.extend(['-mavx2', '-msse4.2', '-mpopcnt'])
+
 module = Extension(
     'cjson',
     sources=[
@@ -11,11 +17,14 @@ module = Extension(
         './src/json_file_io.c',
         './src/json_to_parsers.c',
         './src/json_sqlite.c',
-        './src/json_advanced.c'
+        './src/json_advanced.c',
+        './src/json_streaming.c',
+        './src/json_benchmark.c'
     ],
     include_dirs=['./src'],
     libraries=['sqlite3'],
-    extra_compile_args=['-std=c11', '-O3']
+    extra_compile_args=compile_args,
+    extra_link_args=['-lm']
 )
 
 setup(
