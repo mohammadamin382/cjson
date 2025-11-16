@@ -1,6 +1,7 @@
 #include "json_parser.h"
 #include <stdlib.h>
 #include <string.h>
+#include <strings.h>
 #include <ctype.h>
 
 // Advanced JSON Path Query with wildcards and filters
@@ -73,6 +74,17 @@ JsonValue* json_path_query(const JsonValue* root, const char* path) {
     
     if (!path) {
         json_set_error(JSON_ERROR_NULL_POINTER, "Path is NULL", 0, 0);
+        return NULL;
+    }
+    
+    size_t path_len = strlen(path);
+    if (path_len == 0) {
+        json_set_error(JSON_ERROR_INVALID_SYNTAX, "Path is empty", 0, 0);
+        return NULL;
+    }
+    
+    if (path_len > 10000) {  // Prevent DoS with very long paths
+        json_set_error(JSON_ERROR_INVALID_SYNTAX, "Path too long (>10000 chars)", 0, 0);
         return NULL;
     }
     
