@@ -1367,5 +1367,6 @@ PyMODINIT_FUNC PyInit_cjson(void) {
     MmEnableBufferOverflowDetection(1);
     MmLeakCheckControl(1);
     MmDebugModeControl(1);
+    MmInstallSigsegvHandler();
     return PyModule_Create(&jsonmodule);
 }
