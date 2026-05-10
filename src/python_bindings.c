@@ -1,7 +1,6 @@
 #define PY_SSIZE_T_CLEAN
 #include <Python.h>
 #include "json_parser.h"
-#include "../MmMemoryManager.h"
 
 static void json_value_destructor(PyObject* capsule) {
     JsonValue* value = (JsonValue*)PyCapsule_GetPointer(capsule, "JsonValue");
@@ -1364,9 +1363,5 @@ static struct PyModuleDef jsonmodule = {
 };
 
 PyMODINIT_FUNC PyInit_cjson(void) {
-    MmEnableBufferOverflowDetection(1);
-    MmLeakCheckControl(1);
-    MmDebugModeControl(1);
-    MmInstallSigsegvHandler();
     return PyModule_Create(&jsonmodule);
 }
