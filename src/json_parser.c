@@ -13,6 +13,14 @@
 #define SIMD_AVAILABLE 0
 #endif
 
+#ifdef __GNUC__
+#define likely(x) __builtin_expect(!!(x), 1)
+#define unlikely(x) __builtin_expect(!!(x), 0)
+#else
+#define likely(x) (x)
+#define unlikely(x) (x)
+#endif
+
 JsonError g_json_last_error = {JSON_ERROR_NONE, "", 0, 0, NULL};
 
 const char* json_error_message(JsonErrorCode code) {
@@ -79,9 +87,9 @@ static inline bool is_json_whitespace(char c) {
 }
 
 #if SIMD_AVAILABLE
-static const char* skip_whitespace_simd(const char* ptr, size_t* line, size_t* column) {
-    while (1) {
-        __m128i chunk = _mm_loadu_si128((__m128i*)ptr);
+static const char* skip_whitespace_simd(const char* ptr, const char* end, size_t* line, size_t* column) {
+    while (ptr + 16 <= end) {
+        __m128i chunk = _mm_loadu_si128((const __m128i*)ptr);
         __m128i space = _mm_set1_epi8(' ');
         __m128i tab = _mm_set1_epi8('\t');
         __m128i newline = _mm_set1_epi8('\n');
@@ -117,22 +125,21 @@ static const char* skip_whitespace_simd(const char* ptr, size_t* line, size_t* c
             } else {
                 (*column)++;
             }
-            if (!ptr[i]) return ptr + i;
         }
         ptr += 16;
     }
+    return ptr;
 }
 #endif
 
 static void skip_whitespace(Tokenizer* t) {
 #if SIMD_AVAILABLE
-    if ((size_t)t->current % 16 == 0) {
-        t->current = skip_whitespace_simd(t->current, &t->line, &t->column);
-        return;
+    if (t->end - t->current >= 16) {
+        t->current = skip_whitespace_simd(t->current, t->end, &t->line, &t->column);
     }
 #endif
     
-    while (*t->current) {
+    while (t->current < t->end && *t->current) {
         char c = *t->current;
         if (c == '\n') {
             t->line++;
@@ -150,7 +157,7 @@ static void skip_whitespace(Tokenizer* t) {
     }
 }
 
-static bool validate_number_format_strict(const char* start, const char* end) {
+static inline bool validate_number_format_strict(const char* start, const char* end) {
     if (!start || !end || start >= end) return false;
     
     const char* p = start;
@@ -188,14 +195,14 @@ static bool validate_number_format_strict(const char* start, const char* end) {
     return p == end;
 }
 
-static unsigned int parse_hex_digit(char c) {
+static inline int parse_hex_digit(char c) {
     if (c >= '0' && c <= '9') return c - '0';
     if (c >= 'a' && c <= 'f') return c - 'a' + 10;
     if (c >= 'A' && c <= 'F') return c - 'A' + 10;
-    return 0;
+    return -1;
 }
 
-static int encode_utf8(unsigned int codepoint, char* output) {
+static inline int encode_utf8(unsigned int codepoint, char* output) {
     if (codepoint <= 0x7F) {
         output[0] = (char)codepoint;
         return 1;
@@ -222,7 +229,7 @@ static int encode_utf8(unsigned int codepoint, char* output) {
 }
 
 static char* tokenize_string(Tokenizer* t) {
-    if (t->current >= t->end || *t->current != '"') return NULL;
+    if (unlikely(t->current >= t->end || *t->current != '"')) return NULL;
     
     t->current++;
     t->column++;
@@ -230,22 +237,20 @@ static char* tokenize_string(Tokenizer* t) {
     size_t length = 0;
     size_t capacity = 256;
     char* result = malloc(capacity);
-    if (!result) {
+    if (unlikely(!result)) {
         json_set_error(JSON_ERROR_OUT_OF_MEMORY, "Failed to allocate string", t->line, t->column);
         return NULL;
     }
-    memset(result, 0, capacity);
     
     while (t->current < t->end && *t->current && *t->current != '"') {
-        if (length + 5 >= capacity) {
+        if (unlikely(length + 6 >= capacity)) {
             size_t new_capacity = capacity * 2;
             char* new_result = realloc(result, new_capacity);
-            if (!new_result) {
+            if (unlikely(!new_result)) {
                 free(result);
                 json_set_error(JSON_ERROR_OUT_OF_MEMORY, "Failed to expand string buffer", t->line, t->column);
                 return NULL;
             }
-            memset(new_result + capacity, 0, new_capacity - capacity);
             result = new_result;
             capacity = new_capacity;
         }
@@ -539,14 +544,14 @@ static JsonValue* parse_value(Tokenizer* t);
 #define MAX_NESTING_DEPTH 1000
 
 static JsonValue* parse_array(Tokenizer* t) {
-    if (++t->depth > MAX_NESTING_DEPTH) {
+    if (unlikely(++t->depth > MAX_NESTING_DEPTH)) {
         json_set_error(JSON_ERROR_STACK_OVERFLOW, "Nesting too deep", t->line, t->column);
         t->depth--;
         return NULL;
     }
     
     JsonValue* array = json_create_array();
-    if (!array) {
+    if (unlikely(!array)) {
         t->depth--;
         return NULL;
     }
@@ -560,13 +565,13 @@ static JsonValue* parse_array(Tokenizer* t) {
     
     while (true) {
         JsonValue* value = parse_value(t);
-        if (!value) {
+        if (unlikely(!value)) {
             json_free(array);
             t->depth--;
             return NULL;
         }
         
-        if (!json_array_append(array, value)) {
+        if (unlikely(!json_array_append(array, value))) {
             json_free(value);
             json_free(array);
             t->depth--;
@@ -577,7 +582,7 @@ static JsonValue* parse_array(Tokenizer* t) {
         
         if (t->current_token.type == TOKEN_COMMA) {
             t->current_token = next_token(t);
-        } else if (t->current_token.type == TOKEN_RBRACKET) {
+        } else if (likely(t->current_token.type == TOKEN_RBRACKET)) {
             break;
         } else {
             json_free(array);
@@ -592,14 +597,14 @@ static JsonValue* parse_array(Tokenizer* t) {
 }
 
 static JsonValue* parse_object(Tokenizer* t) {
-    if (++t->depth > MAX_NESTING_DEPTH) {
+    if (unlikely(++t->depth > MAX_NESTING_DEPTH)) {
         json_set_error(JSON_ERROR_STACK_OVERFLOW, "Nesting too deep", t->line, t->column);
         t->depth--;
         return NULL;
     }
     
     JsonValue* object = json_create_object();
-    if (!object) {
+    if (unlikely(!object)) {
         t->depth--;
         return NULL;
     }
@@ -612,7 +617,7 @@ static JsonValue* parse_object(Tokenizer* t) {
     }
     
     while (true) {
-        if (t->current_token.type != TOKEN_STRING) {
+        if (unlikely(t->current_token.type != TOKEN_STRING)) {
             json_free(object);
             json_set_error(JSON_ERROR_UNEXPECTED_TOKEN, "Expected string key", t->current_token.line, t->current_token.column);
             t->depth--;
@@ -622,7 +627,7 @@ static JsonValue* parse_object(Tokenizer* t) {
         char* key = t->current_token.value.string;
         
         t->current_token = next_token(t);
-        if (t->current_token.type != TOKEN_COLON) {
+        if (unlikely(t->current_token.type != TOKEN_COLON)) {
             free(key);
             json_free(object);
             json_set_error(JSON_ERROR_UNEXPECTED_TOKEN, "Expected ':'", t->current_token.line, t->current_token.column);
@@ -632,14 +637,14 @@ static JsonValue* parse_object(Tokenizer* t) {
         
         t->current_token = next_token(t);
         JsonValue* value = parse_value(t);
-        if (!value) {
+        if (unlikely(!value)) {
             free(key);
             json_free(object);
             t->depth--;
             return NULL;
         }
         
-        if (!json_object_set(object, key, value)) {
+        if (unlikely(!json_object_set(object, key, value))) {
             free(key);
             json_free(value);
             json_free(object);
@@ -652,7 +657,7 @@ static JsonValue* parse_object(Tokenizer* t) {
         
         if (t->current_token.type == TOKEN_COMMA) {
             t->current_token = next_token(t);
-        } else if (t->current_token.type == TOKEN_RBRACE) {
+        } else if (likely(t->current_token.type == TOKEN_RBRACE)) {
             break;
         } else {
             json_free(object);
@@ -784,13 +789,12 @@ JsonValue* json_create_string(const char* val) {
     }
     
     value->type = JSON_STRING;
-    value->data.string_value = malloc(strlen(val) + 1);
+    value->data.string_value = strdup(val);
     if (!value->data.string_value) {
         free(value);
         json_set_error(JSON_ERROR_OUT_OF_MEMORY, "Failed to allocate string", 0, 0);
         return NULL;
     }
-    strcpy(value->data.string_value, val);
     return value;
 }
 
@@ -847,7 +851,6 @@ bool json_array_append(JsonValue* array, JsonValue* value) {
             json_set_error(JSON_ERROR_OUT_OF_MEMORY, "Failed to expand array", 0, 0);
             return false;
         }
-        memset(new_values + arr->capacity, 0, (new_capacity - arr->capacity) * sizeof(JsonValue*));
         arr->values = new_values;
         arr->capacity = new_capacity;
     }
@@ -883,37 +886,41 @@ bool json_object_set(JsonValue* object, const char* key, JsonValue* value) {
             json_set_error(JSON_ERROR_OUT_OF_MEMORY, "Failed to expand object", 0, 0);
             return false;
         }
-        memset(new_pairs + obj->capacity, 0, (new_capacity - obj->capacity) * sizeof(JsonPair));
         obj->pairs = new_pairs;
         obj->capacity = new_capacity;
     }
     
-    obj->pairs[obj->count].key = malloc(strlen(key) + 1);
+    obj->pairs[obj->count].key = strdup(key);
     if (!obj->pairs[obj->count].key) {
         json_set_error(JSON_ERROR_OUT_OF_MEMORY, "Failed to allocate key", 0, 0);
         return false;
     }
-    strcpy(obj->pairs[obj->count].key, key);
     obj->pairs[obj->count].value = value;
     obj->count++;
     return true;
 }
 
 JsonValue* json_object_get(const JsonValue* object, const char* key) {
-    if (!object || !key) {
+    if (unlikely(!object || !key)) {
         json_set_error(JSON_ERROR_NULL_POINTER, "Object or key is NULL", 0, 0);
         return NULL;
     }
     
-    if (object->type != JSON_OBJECT) {
+    if (unlikely(object->type != JSON_OBJECT)) {
         json_set_error(JSON_ERROR_INVALID_TYPE, "Not an object", 0, 0);
         return NULL;
     }
     
     JsonObject* obj = object->data.object_value;
+    size_t key_len = strlen(key);
+    
     for (size_t i = 0; i < obj->count; i++) {
-        if (strcmp(obj->pairs[i].key, key) == 0) {
-            return obj->pairs[i].value;
+        const char* obj_key = obj->pairs[i].key;
+        if (likely(obj_key[0] == key[0])) {
+            size_t obj_key_len = strlen(obj_key);
+            if (obj_key_len == key_len && memcmp(obj_key, key, key_len) == 0) {
+                return obj->pairs[i].value;
+            }
         }
     }
     
@@ -960,8 +967,12 @@ size_t json_object_size(const JsonValue* object) {
 bool json_object_has(const JsonValue* object, const char* key) {
     if (!object || object->type != JSON_OBJECT || !key) return false;
     JsonObject* obj = object->data.object_value;
+    size_t key_len = strlen(key);
     for (size_t i = 0; i < obj->count; i++) {
-        if (strcmp(obj->pairs[i].key, key) == 0) return true;
+        const char* obj_key = obj->pairs[i].key;
+        if (obj_key[0] == key[0] && strlen(obj_key) == key_len && strcmp(obj_key, key) == 0) {
+            return true;
+        }
     }
     return false;
 }
